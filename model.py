@@ -47,14 +47,6 @@ class LitWhisper(L.LightningModule):
         # update learning rate
         self.lr_schedulers().step()
 
-    def num_steps(self) -> int:
-        """Get number of steps"""
-        # Accessing _data_source is flaky and might break
-        dataset = self.trainer.fit_loop._data_source.dataloader()
-        dataset_size = len(dataset)
-        num_devices = max(1, self.trainer.num_devices)
-        num_steps = dataset_size * self.trainer.max_epochs // (self.trainer.accumulate_grad_batches * num_devices)
-        return num_steps
 
     def configure_optimizers(self):
         if self.hparams.optimizer_name == "adam":
@@ -72,40 +64,3 @@ class LitWhisper(L.LightningModule):
         )
         return [optimizer], [scheduler]
 
-
-
-
-    # @staticmethod
-    # def add_model_specific_args(parent_parser, root_dir):  # pragma: no cover
-    #     """
-    #     Parameters you define here will be available to your model through self
-    #     :param parent_parser:
-    #     :param root_dir:
-    #     :return:
-    #     """
-    #     parser = ArgumentParser(parents=[parent_parser], add_help=False)
-
-    #     # param overwrites
-    #     # parser.set_defaults(gradient_clip_val=5.0)
-
-    #     parser.add_argument('--lr', default=1e-4, type=float)
-    #     parser.add_argument('--weight_decay', default=0.01, type=float)
-    #     parser.add_argument(
-    #         "--warmup_steps",
-    #         type=int,
-    #         default=500,
-    #         help="Number of warmup steps for learning rate scheduler",
-    #     )
-    #     parser.add_argument(
-    #         "--max_grad_norm",
-    #         type=float,
-    #         default=1.0,
-    #         help="Maximum gradient norm for gradient clipping",
-    #     )
-    #     parser.add_argument(
-    #         "--model",
-    #         default="small",        
-    #         help="name of the Whisper model to use",
-    #     )
-
-    #     return parser
