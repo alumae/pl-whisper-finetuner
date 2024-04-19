@@ -157,7 +157,8 @@ class Record:
 
     audio_path: str
     text: str  # text including timestamps
-    language: str = "en"
+    language: str
+    task: str
     prompt: str = ""  # previous text including timestamps
 
 
@@ -561,6 +562,7 @@ class DataProcessor:
                 record = Record(
                     audio_path=data["audio_path"],
                     text=data["text"],
+                    task=data.get("task", "transcribe"),
                     language=data["language"],
                     prompt=data["prompt"],
                 )

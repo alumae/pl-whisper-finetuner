@@ -3,6 +3,7 @@ from typing import List, Optional, Tuple
 import random
 from typing import Sequence, Union
 import logging
+import numpy as np
 
 import torch
 from torch.nn.utils.rnn import pad_sequence
@@ -17,6 +18,7 @@ import lightning.pytorch as pl
 from whisper.tokenizer import get_tokenizer
 
 from specaug import SpecAug
+import wavemap
 
 
 class AudioDataset(Dataset):
@@ -28,6 +30,7 @@ class AudioDataset(Dataset):
         max_prompt_length: int = 223,  # The maximum number of tokens to use for the prompt
         prompt_use_rate: float = 0.5,
         no_timestamps_rate: float = 0.5,
+        n_mels: int = 80,
         do_spec_augment: bool = False,
         specaug_conf: Union[dict, None] = None
     ) -> None:
@@ -37,6 +40,7 @@ class AudioDataset(Dataset):
         self.max_prompt_length = max_prompt_length
         self.prompt_use_rate = prompt_use_rate
         self.no_timestamps_rate = no_timestamps_rate        
+        self.n_mels = n_mels
         if do_spec_augment:
             self.specaug = SpecAug(**specaug_conf)
         else:
@@ -59,7 +63,7 @@ class AudioDataset(Dataset):
         return prompt_tokens
 
     def _get_special_tokens(
-        self, is_text_empty: bool, language: str, no_timestamps: bool
+            self, is_text_empty: bool, language: str, task: str, no_timestamps: bool
     ) -> List[int]:
         if is_text_empty:
             special_tokens = [self.tokenizer.sot, self.tokenizer.no_speech]
@@ -67,7 +71,7 @@ class AudioDataset(Dataset):
             special_tokens = [
                 self.tokenizer.sot,
                 self.tokenizer.special_tokens[f"<|{language}|>"],
-                self.tokenizer.special_tokens["<|transcribe|>"],
+                self.tokenizer.special_tokens[f"<|{task}|>"],
             ]
             if no_timestamps:
                 special_tokens.append(self.tokenizer.no_timestamps)
@@ -111,11 +115,23 @@ class AudioDataset(Dataset):
 
         return text_tokens, next_partial_segment_start
 
+    def get_wav_audio(self, audio_path):
+        """Load the wav file at the given file path. Only 16-bit wavs are supported."""
+
+        sound_np = wavemap(audio_path, 'r')
+        assert(sound_np.dtype == np.int16)
+        # FIXME: resample if necessary        
+        assert(sound_np.sample_rate == 16000)
+        assert(len(sound_np.shape) == 1)
+        return sound_np.astype(np.float32) / 32768.0
+
     def _calculate_mel(
         self, audio_path: str, next_partial_segment_start: Optional[float], no_timestamps: bool
     ) -> torch.Tensor:
-        #print(audio_path)
-        mel = log_mel_spectrogram(audio_path)
+        if audio_path.endswith(".wav"):
+            mel = log_mel_spectrogram(self.get_wav_audio(audio_path), self.n_mels)
+        else:
+            mel = log_mel_spectrogram(audio_path, self.n_mels)
         if no_timestamps and next_partial_segment_start is not None:
             mel = mel[:, : int(next_partial_segment_start * self.num_frames_per_second)]
         mel = pad_or_trim(mel, N_FRAMES)
@@ -149,7 +165,7 @@ class AudioDataset(Dataset):
         prompt_tokens = self._get_prompt_tokens(record.prompt)
         text_tokens, next_partial_segment_start = self._get_text_tokens(record.text, no_timestamps)
         is_text_empty = len(text_tokens) == 0
-        special_tokens = self._get_special_tokens(is_text_empty, record.language, no_timestamps)
+        special_tokens = self._get_special_tokens(is_text_empty, record.language, record.task, no_timestamps)
 
         decoder_input = prompt_tokens + special_tokens + text_tokens
         if len(decoder_input) > self.model_n_text_ctx:
@@ -185,10 +201,12 @@ class WhisperDataModule(pl.LightningDataModule):
         train_json: str = "train.json", 
         dev_json: str = "dev.json",
         batch_size: int = 1,
+        num_workers: int = 4,
         no_timestamps_training: bool = False,
         prompt_use_rate: float = 0.5,
         no_timestamps_rate: float = 0.5,
         max_prompt_length: int = 223,
+        n_mels: int = 80,
         do_spec_augment: bool = False
     ):
         super().__init__()
@@ -217,8 +235,11 @@ class WhisperDataModule(pl.LightningDataModule):
                 prompt_use_rate=self.hparams.prompt_use_rate,
                 no_timestamps_rate=self.hparams.no_timestamps_rate,
                 do_spec_augment=self.hparams.do_spec_augment,
+                n_mels=self.hparams.n_mels,
                 specaug_conf=specaug_conf
             )
+
+        if stage == "fit" or stage == "validate":
             self.val_dataset = AudioDataset(
                 DataProcessor.read_records(self.hparams.dev_json),
                 tokenizer,
@@ -227,6 +248,7 @@ class WhisperDataModule(pl.LightningDataModule):
                 prompt_use_rate=1.0,
                 no_timestamps_rate=0.0,
                 do_spec_augment=False,
+                n_mels=self.hparams.n_mels,
                 specaug_conf=None
             )
 
@@ -244,7 +266,7 @@ class WhisperDataModule(pl.LightningDataModule):
            self.train_dataset,
             batch_size=self.hparams.batch_size,
             shuffle=True,
-            num_workers=4,
+            num_workers=self.hparams.num_workers,
             pin_memory=True,
             collate_fn=self.train_dataset.collate_fn,
         )

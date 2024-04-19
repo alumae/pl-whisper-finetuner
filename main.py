@@ -1,8 +1,8 @@
-from numba.core.errors import NumbaDeprecationWarning, NumbaPendingDeprecationWarning
+#from numba.core.errors import NumbaDeprecationWarning, NumbaPendingDeprecationWarning
 import warnings
 
-warnings.simplefilter('ignore', category=NumbaDeprecationWarning)
-warnings.simplefilter('ignore', category=NumbaPendingDeprecationWarning)
+#warnings.simplefilter('ignore', category=NumbaDeprecationWarning)
+#warnings.simplefilter('ignore', category=NumbaPendingDeprecationWarning)
 
 import sys
 import os
@@ -30,6 +30,8 @@ from lightning.pytorch.cli import LightningCLI
 class MyLightningCLI(LightningCLI):
     def add_arguments_to_parser(self, parser):
         parser.link_arguments("model.model", "data.model")
+
+
 
 
 if __name__ == '__main__':

@@ -15,7 +15,7 @@ class LitWhisper(L.LightningModule):
         lr:float = 1e-4,
         weight_decay: float = 0.00,
         warmup_steps: int = 500,
-        optimizer_name: str = "adam",
+        optimizer_name: str = "adam",        
         *args, **kwargs
     ):
         super().__init__()
@@ -51,6 +51,8 @@ class LitWhisper(L.LightningModule):
     def configure_optimizers(self):
         if self.hparams.optimizer_name == "adam":
             optimizer = torch.optim.Adam(self.parameters(), lr=self.hparams.lr, weight_decay=self.hparams.weight_decay)    
+        elif self.hparams.optimizer_name == "adamw":
+            optimizer = torch.optim.AdamW(self.parameters(), lr=self.hparams.lr, weight_decay=self.hparams.weight_decay)                        
         elif self.hparams.optimizer_name == "adam8bit":
             import bitsandbytes as bnb
             optimizer = bnb.optim.Adam8bit(self.parameters(), lr=self.hparams.lr, weight_decay=self.hparams.weight_decay)
@@ -63,4 +65,6 @@ class LitWhisper(L.LightningModule):
             num_training_steps=self.trainer.estimated_stepping_batches
         )
         return [optimizer], [scheduler]
+
+
 
