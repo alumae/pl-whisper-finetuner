@@ -1,5 +1,6 @@
 import argparse
 import json
+from functools import lru_cache
 import unicodedata
 from collections import deque
 from dataclasses import dataclass
@@ -39,25 +40,6 @@ def get_parser() -> argparse.ArgumentParser:
     parser.set_defaults(with_timestamps=True)
 
     parser.add_argument(
-        "--audio-dir",
-        type=str,
-        help=(
-            "Path to directory containing audio files. This option is used only when "
-            "`--with-timestamps` is set. Audio formats that can be read by ffmpeg are supported."
-        ),
-    )
-    parser.add_argument(
-        "--transcript-dir",
-        type=str,
-        help=(
-            "Path to directory containing transcripts in SRT (or VTT) format. This option is used "
-            "only when `--with-timestamps` is set. Filenames must match the filenames under "
-            "`--audio` directory except for the extension. For example, if the transcript file is "
-            "`example.srt`, there must be an audio file like `example.wav` under `--audio` "
-            "directory.",
-        ),
-    )
-    parser.add_argument(
         "--data-file",
         type=str,
         help=(
@@ -73,6 +55,15 @@ def get_parser() -> argparse.ArgumentParser:
         choices=sorted(LANGUAGES.keys()) + sorted([k.title() for k in TO_LANGUAGE_CODE.keys()]),
         help="Language of the data",
     )
+    
+    parser.add_argument(
+        "--task",
+        type=str,
+        default="transcribe",
+        choices=["transcribe", "translate"],
+        help="Task (transcribe or translate)",
+    )
+    
     parser.add_argument("--output", type=str, default="data.json", help="Path to output json file")
     parser.add_argument(
         "--dump-dir", type=str, default="dump", help="Directory to dump audio files"
@@ -157,8 +148,8 @@ class Record:
 
     audio_path: str
     text: str  # text including timestamps
-    language: str
-    task: str
+    language: str = "en"
+    task: str = "transcribe"
     prompt: str = ""  # previous text including timestamps
 
 
@@ -172,10 +163,9 @@ class DataProcessor:
     def __init__(
         self,
         with_timestamps: bool = True,
-        audio_dir: str = None,
-        transcript_dir: str = None,
         data_file: str = None,
         language: str = "en",
+        task: str = "transcribe",
         output: str = "data.json",
         dump_dir: str = "dump",
         timestamp_resolution: int = 20,
@@ -186,10 +176,9 @@ class DataProcessor:
         normalize_unicode: bool = False,
     ) -> None:
         self.with_timestamps = with_timestamps
-        self.audio_dir = audio_dir
-        self.transcript_dir = transcript_dir
         self.data_file = data_file
         self.language = language
+        self.task = task
         self.output = output
         self.dump_dir = dump_dir
         self.timestamp_resolution = timestamp_resolution
@@ -205,20 +194,8 @@ class DataProcessor:
         Path(self.dump_dir).mkdir(parents=True, exist_ok=True)
 
     def _verify_args(self) -> None:
-        if self.with_timestamps:
-            if not self.audio_dir or not self.transcript_dir:
-                raise ValueError(
-                    "`audio_dir` and `transcript_dir` must be set when `with_timestamps` is True"
-                )
-
-            if self.timestamp_resolution % 20 != 0:
-                raise ValueError(
-                    "`timestamps_resolution` must be multiples of 20ms. "
-                    f"Got {self.timestamp_resolution}"
-                )
-        else:
-            if not self.data_file:
-                raise ValueError("`data_file` must be set when `with_timestamps` is False")
+        if not self.data_file:
+            raise ValueError("`data_file` must be set")
 
         if self.language not in LANGUAGES:
             if self.language in TO_LANGUAGE_CODE:
@@ -263,35 +240,35 @@ class DataProcessor:
         self.write_records(records, self.output)
 
     def _process_with_timestamps(self) -> None:
-        audio_paths = list(Path(self.audio_dir).iterdir())
-        for audio_path in tqdm(audio_paths):
-            speech_id = Path(audio_path).stem
-            if (Path(self.transcript_dir) / f"{speech_id}.srt").exists():
-                transcript_path = Path(self.transcript_dir) / f"{speech_id}.srt"
-                try:
-                    utterances_for_speech = self.read_utterances_from_srt(
-                        transcript_path, self.normalize_unicode
-                    )
-                except Exception as e:
-                    print(e)
-                    print(f"Skipping {transcript_path} because of an error in the transcript")
+        with open(self.data_file, encoding="utf-8") as f:
+            for line in tqdm(f):
+                audio_path, transcript_path = line.strip().split()          
+                audio_path = Path(audio_path)
+                speech_id = Path(audio_path).stem
+                if transcript_path.endswith(".srt"):
+                    try:
+                        utterances_for_speech = self.read_utterances_from_srt(
+                            transcript_path, self.normalize_unicode
+                        )
+                    except Exception as e:
+                        print(e)
+                        print(f"Skipping {transcript_path} because of an error in the transcript")
+                        continue
+                elif transcript_path.endswith(".vtt"):
+                    try:
+                        utterances_for_speech = self.read_utterances_from_vtt(
+                            transcript_path, self.normalize_unicode
+                        )
+                    except Exception as e:
+                        print(e)
+                        print(f"Skipping {transcript_path} because of an error in the transcript")
+                        continue
+                else:
+                    print(f"Unknown transcript file type ({transcript_path})")
                     continue
-            elif (Path(self.transcript_dir) / f"{speech_id}.vtt").exists():
-                transcript_path = Path(self.transcript_dir) / f"{speech_id}.vtt"
-                try:
-                    utterances_for_speech = self.read_utterances_from_vtt(
-                        transcript_path, self.normalize_unicode
-                    )
-                except Exception as e:
-                    print(e)
-                    print(f"Skipping {transcript_path} because of an error in the transcript")
-                    continue
-            else:
-                print(f"Transcript file not found for {speech_id}")
-                continue
 
-            records = self._create_records_with_timestamps(utterances_for_speech, audio_path)
-            self.write_records(records, self.output)
+                records = self._create_records_with_timestamps(utterances_for_speech, audio_path)
+                self.write_records(records, self.output)
 
     @staticmethod
     def read_utterances_from_srt(
@@ -440,6 +417,7 @@ class DataProcessor:
                 record = Record(
                     audio_path=segment_audio_path,
                     language=self.language,
+                    task=self.task,
                     text="".join(segment_text),
                     prompt=prompt,
                 )
@@ -562,8 +540,8 @@ class DataProcessor:
                 record = Record(
                     audio_path=data["audio_path"],
                     text=data["text"],
-                    task=data.get("task", "transcribe"),
                     language=data["language"],
+                    task=data["task"],
                     prompt=data["prompt"],
                 )
                 records.append(record)
@@ -577,6 +555,7 @@ class DataProcessor:
                     "audio_path": record.audio_path,
                     "text": record.text,
                     "language": record.language,
+                    "task": record.task,
                     "prompt": record.prompt,
                 }
                 f.write(json.dumps(data, ensure_ascii=False) + "\n")
@@ -599,10 +578,9 @@ def main():
     args = get_parser().parse_args()
     processor = DataProcessor(
         with_timestamps=args.with_timestamps,
-        audio_dir=args.audio_dir,
-        transcript_dir=args.transcript_dir,
         data_file=args.data_file,
         language=args.language,
+        task=args.task,
         output=args.output,
         dump_dir=args.dump_dir,
         timestamp_resolution=args.timestamp_resolution,
